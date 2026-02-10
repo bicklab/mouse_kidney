@@ -1,0 +1,118 @@
+---
+title: "pathway_analysis"
+output: html_document
+date: "2023-09-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(ggplot2)
+library(tidyverse)
+
+```
+
+# Function for pathway analysis.
+```{r}
+find_pathways = function(cell_type_name, sample_genotype, limited_group_size = 50, ontology = "ALL") {
+  # Get file.
+  folder = "tables/metacells_de/"
+  pattern = paste0("^", cell_type_name, "_", sample_genotype, ".*")
+  print(pattern)
+
+  input_filename = list.files(folder, pattern)
+  if (length(input_filename) == 0) {
+    return()
+  }
+  
+  # Load data.
+  exp_data = read_tsv(paste0(folder, input_filename))
+
+  gene_list = exp_data %>%
+    dplyr::select(gene, log2FoldChange) %>%
+    dplyr::arrange(desc(log2FoldChange)) %>%
+    tibble::deframe()
+  
+  tryCatch({  # Written with trycatch to avoid errors with empty lists.
+    
+    # Determine pathways.
+    gse = gseGO(geneList = gene_list, keyType = "SYMBOL", OrgDb = "org.Mm.eg.db", ont = ontology, minGSSize = limited_group_size, maxGSSize = 800, nPermSimple = 10000)
+    gse_all = gseGO(geneList = gene_list, keyType = "SYMBOL", OrgDb = "org.Mm.eg.db", ont = ontology, minGSSize = 2, maxGSSize = 800, nPermSimple = 10000)
+    
+    # Save files.
+    gse_filename = paste0("rds_objects/gse_results/", sample_genotype, "_", cell_type_name, "_gse.rds")
+    saveRDS(gse, gse_filename)
+    
+    gse_filename_all = paste0("rds_objects/gse_results_all/", sample_genotype, "_", cell_type_name, "_gse_all.rds")
+    saveRDS(gse_all, gse_filename_all)
+
+  }, error = function(cond) {
+    message(cond)
+    return("Error determining pathways.")
+  })
+}
+
+
+```
+
+
+```{r}
+
+cell_types = c("neutrophil", "endothelial cell", "t cell",
+               "epithelial cell of proximal tubule", "macrophage", "dendritic cell")
+
+lapply(cell_types, find_pathways, "KO_vs_WT")
+
+find_pathways("macrophage", "KO_vs_WT", ontology = "BP")
+(generate_pathway_plots("rds_objects/gse_results/KO_vs_WT_macrophage_gse.rds", "macrophage"))
+
+```
+
+# Generate plots.
+```{r}
+
+save_plot = function(plot, file, legend = TRUE, width = 4, height = 4, png = FALSE) {
+  if (png) { ggsave(plot = plot, filename =  paste0(file, ".png"), dpi = 600, width = ifelse(legend, width, width - 1.5), height = height, units = 'in') }
+  ggsave(plot = plot, filename =  paste0(file, ".pdf"), dpi = 600, width = ifelse(legend, width, width - 1.5), height = height, units = 'in')
+}
+
+
+generate_pathway_plots = function(path_to_rds, title) {
+  # Read in data.
+  gse = readRDS(path_to_rds)
+  
+  tryCatch({
+    # Make plots.
+    split_plot = dotplot(gse, showCategory = 10, split = ".sign") +
+        ggtitle(paste(title, "enriched pathways")) +
+        facet_grid(.~.sign)
+    plot = dotplot(gse) +
+        ggtitle(paste(title, "enriched pathways"))
+    
+    # Make filename.
+    filename = paste0("figures/pathway_analysis/gsea_dotplot_", gsub("\\+", "", gsub(" ", "_", title)))
+    split_filename = paste0("figures/pathway_analysis/gsea_split_dotplot_", gsub("\\+", "", gsub(" ", "_", title)))
+    
+    # Save plots.
+    save_plot(split_plot, split_filename, height = 14, width = 7)#height = 6.5, width = 7)
+    save_plot(plot, filename, height = 6.5, width = 6)
+  }, error = function(cond) {
+    message(cond)
+    return("Error rendering plot.")
+  })
+  
+  
+}
+```
+
+```{r}
+generate_pathway_plots("rds_objects/gse_results/KO_vs_WT_macrophage_gse.rds", "macrophage")
+generate_pathway_plots("rds_objects/gse_results/KO_vs_WT_dendritic cell_gse.rds", "dendritic cell")
+generate_pathway_plots("rds_objects/gse_results/KO_vs_WT_endothelial cell_gse.rds", "endothelial cell")
+generate_pathway_plots("rds_objects/gse_results/KO_vs_WT_epithelial cell of proximal tubule_gse.rds", "epithelial cell of proximal tubule")
+generate_pathway_plots("rds_objects/gse_results/KO_vs_WT_neutrophil_gse.rds", "neutrophil")
+generate_pathway_plots("rds_objects/gse_results/KO_vs_WT_t cell_gse.rds", "t cell")
+
+```
+

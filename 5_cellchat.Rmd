@@ -1,0 +1,181 @@
+---
+title: "cellchat"
+output: html_document
+date: "2023-09-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+library(tidyverse)
+library(Seurat)
+library(CellChat)
+library(biomaRt)
+library(org.Mm.eg.db)
+library(NMF)
+save_plot = function(plot, file, legend = TRUE, width = 4, height = 4, png = FALSE) {
+  if (png) { ggsave(plot = plot, filename =  paste0(file, ".png"), dpi = 600, width = ifelse(legend, width, width - 1.5), height = height, units = 'in') }
+  ggsave(plot = plot, filename =  paste0(file, ".pdf"), dpi = 600, width = ifelse(legend, width, width - 1.5), height = height, units = 'in')
+}
+```
+
+
+# Load data.
+```{r}
+annotated_seu = readRDS("rds_objects/6_annotated_seu_clean_sc.rds")
+```
+
+# Convert ensembl ids to gene symbols.
+```{r}
+annotated_seu_gene_names = mapIds(
+  org.Mm.eg.db,
+  keys = rownames(annotated_seu),
+  column = 'SYMBOL',
+  keytype = 'ENSEMBL')
+
+annotated_sc = as.SingleCellExperiment(annotated_seu)
+rownames(annotated_sc) = annotated_seu_gene_names
+annotated_sc = annotated_sc[!is.na(rownames(annotated_sc)),]
+rownames(annotated_sc) = make.unique(rownames(annotated_sc)) 
+
+renamed_seu = as.Seurat(annotated_sc)
+saveRDS(renamed_seu, "rds_objects/7_renamed_seu_sc.rds")
+```
+
+```{r}
+renamed_seu = readRDS("rds_objects/7_renamed_seu_sc.rds")
+```
+
+```{r}
+Idents(renamed_seu) = "predicted.id"
+features = c("Nos2", "Cd86", "Tnf", "Arg1", "Mgl2", "Spp1", "Fn1", "Klf4")
+for (feature in features) {
+  print(FeaturePlot(renamed_seu, feature))
+}
+```
+
+```{r}
+DimPlot(renamed_seu, group.by = "Condition")
+```
+
+
+
+# Function to create objects.
+```{r}
+create_cc = function(seu_obj, nPatterns, output_path) {
+  # Follow steps from tutorial.
+  cellchat = createCellChat(object = seu_obj, meta = seu_obj@meta.data, group.by = "predicted.id") 
+  cellchat@DB = CellChatDB.mouse
+  
+  # Preprocessing.
+  cellchat = subsetData(cellchat)
+  cellchat = identifyOverExpressedGenes(cellchat)
+  cellchat = identifyOverExpressedInteractions(cellchat)
+  cellchat = projectData(cellchat, PPI.mouse)
+  cellchat = computeCommunProb(cellchat, type = "truncatedMean", trim = 0.1)
+  
+  # Filter out the cell-cell communication if there are only few number of cells in certain cell groups 
+  cellchat = filterCommunication(cellchat, min.cells = 25) 
+  cellchat = computeCommunProbPathway(cellchat)
+  cellchat = aggregateNet(cellchat)
+  cellchat = netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+  
+  # Outgoing patterns.
+  selectK(cellchat, pattern = "outgoing") # Run before to determine best number for nPatterns (should be done for each sample). 
+  cellchat = identifyCommunicationPatterns(cellchat, pattern = "outgoing", k = nPatterns)
+  
+  # Incoming patterns.
+  selectK(cellchat, pattern = "incoming")
+  cellchat = identifyCommunicationPatterns(cellchat, pattern = "incoming", k = nPatterns)
+  saveRDS(cellchat, output_path)
+  return(cellchat)
+}
+```
+
+
+```{r}
+Idents(renamed_seu) = "predicted.id"
+renamed_seu.list = SplitObject(renamed_seu, split.by = c("Condition"))
+renamed_seu_ko = renamed_seu.list$KO
+renamed_seu_wt = renamed_seu.list$WT
+
+create_cc(seu_obj = renamed_seu_ko, nPatterns = 3, output_path = "rds_objects/cellchat/cc_ko.rds")
+create_cc(seu_obj = renamed_seu_wt, nPatterns = 4, output_path = "rds_objects/cellchat/cc_wt.rds")
+
+```
+
+
+# Load objects.
+```{r}
+cc_ko = readRDS("rds_objects/cellchat/cc_ko.rds")
+cc_wt = readRDS("rds_objects/cellchat/cc_wt.rds")
+```
+
+# Merge objects.
+```{r}
+cc.list = list(KO = cc_ko, WT = cc_wt)
+merged_cc = mergeCellChat(cc.list, add.names = names(cc.list))
+merged_cc = updateCellChat(merged_cc)
+```
+
+# Plot circle plots (endothelial).
+```{r}
+(pt_circ_plot = netVisual_diffInteraction(merged_cc, weight.scale = TRUE, measure = "weight", sources.use = c("epithelial cell of proximal tubule"), targets.use = c("dendritic cell", "endothelial cell", "macrophage", "neutrophil", "T cell")))
+
+pdf("figures/cellchat/pt_circ_plot.pdf", height = 5.5, width = 7)
+pt_circ_plot
+dev.off()
+```
+
+# Plot barplots (pt).
+```{r}
+(pt_to_mac_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "epithelial cell of proximal tubule", targets.use = c("macrophage"), title = "Proximal tubule signaling to macrophages", do.stat = TRUE))
+save_plot(pt_to_mac_cc_plot, "figures/cellchat/pt_to_mac_cc_plot", width = 6, png = TRUE)
+
+(pt_to_neu_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "epithelial cell of proximal tubule", targets.use = c("neutrophil"), title = "Proximal tubule signaling to neutrophils", do.stat = TRUE))
+save_plot(pt_to_neu_cc_plot, "figures/cellchat/pt_to_neu_cc_plot", width = 6, png = TRUE)
+
+```
+
+```{r}
+(mac_to_pt_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "macrophage", targets.use = c("epithelial cell of proximal tubule"), title = "Macrophage signaling to proximal tubule", do.stat = TRUE))
+save_plot(mac_to_pt_cc_plot, "figures/cellchat/mac_to_pt_cc_plot", width = 6, png = TRUE)
+
+(neu_to_pt_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "neutrophil", targets.use = c("epithelial cell of proximal tubule"), title = "Neutrophil signaling to proximal tubule", do.stat = TRUE))
+save_plot(neu_to_pt_cc_plot, "figures/cellchat/neu_to_pt_cc_plot", width = 6, png = TRUE)
+
+```
+```{r}
+(den_to_pt_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "dendritic cell", targets.use = c("epithelial cell of proximal tubule"), title = "Dendritic signaling to proximal tubule", do.stat = TRUE))
+save_plot(den_to_pt_cc_plot, "figures/cellchat/den_to_pt_cc_plot", width = 6, png = TRUE)
+
+(pt_to_den_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "epithelial cell of proximal tubule", targets.use = c("dendritic cell"), title = "Proximal tubule signaling to dendritic cells", do.stat = TRUE))
+save_plot(pt_to_den_cc_plot, "figures/cellchat/pt_to_den_cc_plot", width = 6, png = TRUE)
+
+```
+
+```{r}
+(t_to_pt_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "T cell", targets.use = c("epithelial cell of proximal tubule"), title = "T cell signaling to proximal tubule", do.stat = TRUE))
+save_plot(t_to_pt_cc_plot, "figures/cellchat/t_to_pt_cc_plot", width = 6, png = TRUE)
+
+(pt_to_t_cc_plot = rankNet(merged_cc, mode = "comparison", comparison = c(1,2), sources.use = "epithelial cell of proximal tubule", targets.use = c("T cell"), title = "Proximal tubule signaling to T cells", do.stat = TRUE))
+save_plot(pt_to_t_cc_plot, "figures/cellchat/pt_to_t_cc_plot", width = 6, png = TRUE)
+
+```
+
+```{r}
+save_data = function(cellchat_object, file_name) {
+  write_tsv(cellchat_object$data, paste0("tables/cellchat/", file_name, ".tsv"))
+}
+
+save_data(den_to_pt_cc_plot, "den_to_pt")
+save_data(mac_to_pt_cc_plot, "mac_to_pt")
+save_data(neu_to_pt_cc_plot, "neu_to_pt")
+save_data(pt_to_den_cc_plot, "pt_to_den")
+save_data(pt_to_mac_cc_plot, "pt_to_mac")
+save_data(pt_to_neu_cc_plot, "pt_to_neu")
+save_data(pt_to_t_cc_plot, "pt_to_t")
+
+
+
+```
+

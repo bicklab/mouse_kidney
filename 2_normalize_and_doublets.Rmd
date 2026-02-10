@@ -1,0 +1,92 @@
+
+---
+title: "normalize_and_doublets"
+output: html_document
+date: "2023-08-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+library(Seurat)
+library(sctransform)
+library(DoubletFinder)
+library(stringr)
+```
+
+
+```{r}
+normalize_and_cluster = function(input_path, output_path) {
+  no_soup_seu = readRDS(input_path)
+  normalized_seu = SCTransform(no_soup_seu, vars.to.regress = "percent.mt", verbose = FALSE)
+  normalized_seu = RunPCA(normalized_seu)
+  normalized_seu = RunUMAP(normalized_seu, dims = 1:10)
+  
+  normalized_seu = FindNeighbors(normalized_seu)
+  normalized_seu = FindClusters(normalized_seu)
+  
+  DimPlot(normalized_seu, label = TRUE)
+  saveRDS(normalized_seu, output_path)
+}
+
+normalize_and_cluster(input_path = "rds_objects/2_no_soup_sample_1.rds", output_path = "rds_objects/3_normalized_sample_1.rds")
+normalize_and_cluster(input_path = "rds_objects/2_no_soup_sample_2.rds", output_path = "rds_objects/3_normalized_sample_2.rds")
+
+normalize_and_cluster(input_path = "rds_objects/2_no_soup_sample_3.rds", output_path = "rds_objects/3_normalized_sample_3.rds")
+normalize_and_cluster(input_path = "rds_objects/2_no_soup_sample_4.rds", output_path = "rds_objects/3_normalized_sample_4.rds")
+
+```
+
+# Check number of PCs to use. 
+```{r}
+normalized_sample_3 = readRDS("rds_objects/3_normalized_sample_3.rds")
+ElbowPlot(normalized_sample_3)
+
+normalized_sample_4 = readRDS("rds_objects/3_normalized_sample_4.rds")
+ElbowPlot(normalized_sample_4)
+```
+
+
+```{r}
+run_doublet_finder = function(input_path, output_path) {
+  seurat_object = readRDS(input_path)
+  
+  ## pK Identification (no ground-truth).
+  sweep_res_list = paramSweep_v3(seurat_object, PCs = 1:10, sct = TRUE)
+  sweep_stats = summarizeSweep(sweep_res_list, GT = FALSE)
+  bcmvn = find.pK(sweep_stats)
+  
+  pK = bcmvn$pK[which.max(bcmvn$BCmetric)]
+  pK = as.numeric(levels(pK))[pK]
+  
+  ## Homotypic doublet proportion estimate.
+  annotations = seurat_object@meta.data$seurat_clusters
+  homotypic.prop = modelHomotypic(annotations)
+  doublet_rate = (dim(seurat_object)[2]/0.57) * 4.6e-6 # based on info from https://satijalab.org/costpercell/
+  nExp_poi = round(doublet_rate*nrow(seurat_object@meta.data))
+  nExp_poi.adj = round(nExp_poi*(1-homotypic.prop))
+  
+  ## Run DoubletFinder.
+  seurat_object = doubletFinder_v3(seurat_object, PCs = 1:10, pN = 0.25, pK = pK, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = TRUE)
+  
+  ## Clean up output.
+  doublet_finder_name = colnames(seurat_object@meta.data)[str_detect(string = colnames(seurat_object@meta.data), pattern = "DF.classifications*")] 
+  seurat_object[["DoubletFinder"]] = seurat_object[[doublet_finder_name]] # make doublet finder column more identifiable
+  seurat_object[[doublet_finder_name]] = NULL
+  
+  pANN_name = colnames(seurat_object@meta.data)[str_detect(string = colnames(seurat_object@meta.data), pattern = "pANN")] 
+  seurat_object[["pANN"]] = seurat_object[[pANN_name]] # make pANN column more identifiable
+  seurat_object[[pANN_name]] = NULL
+  
+  saveRDS(seurat_object, output_path)
+}
+
+
+run_doublet_finder(input_path = "rds_objects/3_normalized_sample_1.rds", output_path = "rds_objects/4_doublets_labeled_sample_1.rds")
+run_doublet_finder(input_path = "rds_objects/3_normalized_sample_2.rds", output_path = "rds_objects/4_doublets_labled_sample_2.rds")
+
+run_doublet_finder(input_path = "rds_objects/3_normalized_sample_3.rds", output_path = "rds_objects/4_doublets_labeled_sample_3.rds")
+run_doublet_finder(input_path = "rds_objects/3_normalized_sample_4.rds", output_path = "rds_objects/4_doublets_labeled_sample_4.rds")
+
+```
+
+

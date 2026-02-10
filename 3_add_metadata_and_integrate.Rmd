@@ -1,0 +1,168 @@
+---
+title: "integration"
+output: html_document
+date: "2023-06-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+library(harmony)
+library(Seurat)
+library(readxl)
+```
+
+# Processed individual lanes were merged using the merge function. The gene counts were normalized for each cell by dividing by the total gene counts and multiplying by a factor of 10,000 before applying log-transformation as implemented by the LogNormalize function. Protein expression counts were normalized using the CLR method. Variable genes were identified using the FindVariableFeatures function (nFeatures = 3000), and the data were scaled and centered using the ScaleData function. Principal component analysis (PCA) was performed on the scaled data. The number of principal components (PCs) used for downstream analysis was selected based on elbow plots and heat maps of PC dimensions as implemented in the DimHeatmap function. To reduce the batch effect associated with running multiple 10X lanes, we used the Harmony algorithm on the uncorrected PCs implemented as a Seurat wrapper to integrate across lanes26. We performed clustering on the Harmony-corrected PCs using FindNeighbors and FindClusters functions. Marker genes for each cluster were determined using the Wilcoxon Rank Sum test implemented in FindAllMarkers.
+
+# Merge lanes.
+```{r}
+seu_sample_1 = readRDS("rds_objects/4_doublets_labeled_sample_1.rds")
+seu_sample_2 = readRDS("rds_objects/4_doublets_labled_sample_2.rds")
+seu_sample_3 = readRDS("rds_objects/4_doublets_labeled_sample_3.rds")
+seu_sample_4 = readRDS("rds_objects/4_doublets_labeled_sample_4.rds")
+
+
+seu_sample_1 = AddMetaData(seu_sample_1, 1, col.name = "Lane")
+seu_sample_2 = AddMetaData(seu_sample_2, 2, col.name = "Lane")
+seu_sample_3 = AddMetaData(seu_sample_3, 3, col.name = "Lane")
+seu_sample_4 = AddMetaData(seu_sample_4, 4, col.name = "Lane")
+
+DefaultAssay(seu_sample_1) = "RNA"
+seu_sample_1[["SCT"]] = NULL
+DefaultAssay(seu_sample_2) = "RNA"
+seu_sample_2[["SCT"]] = NULL
+DefaultAssay(seu_sample_3) = "RNA"
+seu_sample_3[["SCT"]] = NULL
+DefaultAssay(seu_sample_4) = "RNA"
+seu_sample_4[["SCT"]] = NULL
+
+seu_sn = merge(seu_sample_1, seu_sample_2)
+seu_sc = merge(seu_sample_3, seu_sample_4)
+
+```
+
+# Remove doublets, mito, ribo, sex-specific, and red blood cell genes.
+```{r}
+
+Idents(seu_sn) = "DoubletFinder"
+seu_sn = subset(seu_sn, idents = "Singlet") 
+Idents(seu_sc) = "DoubletFinder"
+seu_sc = subset(seu_sc, idents = "Singlet") 
+  
+filter_genes = function(seu) {
+  ribo = rownames(seu)[grepl("^RPS|^RPL", rownames(seu))]
+  mito = rownames(seu)[grepl("^MT-|MRP", rownames(seu))]
+  x_and_rbc = c("DDX3Y", "HBB", "HBA1", "HBD", "HBZ", "HBG2", "HBG1", "HBG2", "CYB5R3", "HBE1", "HBM", "HBQ1", "XIST", "UTY", "USP9Y")
+  
+  all_remove = c(ribo, mito, x_and_rbc)
+  seu = subset(seu, features = setdiff(rownames(seu), all_remove))
+
+  return(seu)
+}
+
+seu_sn = filter_genes(seu_sn)
+seu_sc = filter_genes(seu_sc)
+```
+
+
+# Normalize and scale.
+```{r}
+seu_sn = SCTransform(seu_sn)
+seu_sc = SCTransform(seu_sc)
+
+seu_sn = RunPCA(seu_sn, verbose = FALSE)
+seu_sc = RunPCA(seu_sc, verbose = FALSE)
+
+ElbowPlot(seu_sn) # check how many PCs to use downstream (15 seems to be best)
+ElbowPlot(seu_sc) # check how many PCs to use downstream (15 seems to be best)
+
+seu_sn = RunUMAP(seu_sn, dims = 1:15)
+seu_sc = RunUMAP(seu_sc, dims = 1:15)
+
+```
+
+# Add metadata.
+```{r}
+# Remove uninformative columns.
+seu_sn$orig.ident = NULL
+seu_sn$DoubletFinder = NULL
+seu_sc$orig.ident = NULL
+seu_sc$DoubletFinder = NULL
+
+# Add lane identifier.
+lane_index = c(1, 2, 3, 4)
+values = c("WT", "KO", "WT", "KO")
+seu_sn@meta.data$Condition = values[match(seu_sn@meta.data$Lane, lane_index)]
+seu_sc@meta.data$Condition = values[match(seu_sc@meta.data$Lane, lane_index)]
+
+seu_sn$Lane = as.factor(seu_sn$Lane)
+seu_sc$Lane = as.factor(seu_sc$Lane)
+
+DimPlot(seu_sn, group.by = "Lane")
+DimPlot(seu_sc, group.by = "Lane")
+
+```
+
+# Run harmony.
+```{r}
+
+# Add datatype identifier.
+lane_index = c(1, 2, 3, 4)
+values = c("sn", "sn", "sc", "sc")
+
+seu_sn@meta.data$Type = values[match(seu_sn@meta.data$Lane, lane_index)]
+seu_sn$Type = as.factor(seu_sn$Type)
+seu_sc@meta.data$Type = values[match(seu_sc@meta.data$Lane, lane_index)]
+seu_sc$Type = as.factor(seu_sc$Type)
+
+harmonized_seu_sn = RunHarmony(seu_sn, group.by.vars = c("Lane"))
+harmonized_seu_sc = RunHarmony(seu_sc, group.by.vars = c("Lane"))
+
+harmonized_seu_sn = harmonized_seu_sn %>%
+  RunUMAP(reduction = "harmony", dims = 1:15) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:15) %>% 
+  FindClusters(resolution = 0.5)
+harmonized_seu_sc = harmonized_seu_sc %>%
+  RunUMAP(reduction = "harmony", dims = 1:15) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:15) %>% 
+  FindClusters(resolution = 0.5)
+
+DimPlot(harmonized_seu_sn, group.by = "Lane")
+DimPlot(harmonized_seu_sC, group.by = "Lane")
+
+saveRDS(harmonized_seu_sn, "rds_objects/5_harmonized_seu_sn.rds")
+saveRDS(harmonized_seu_sc, "rds_objects/5_harmonized_seu_sc.rds")
+
+```
+```{r}
+seu_sample_1 = readRDS("rds_objects/4_doublets_labeled_sample_1.rds")
+seu_sample_2 = readRDS("rds_objects/4_doublets_labled_sample_2.rds")
+seu_sample_3 = readRDS("rds_objects/4_doublets_labeled_sample_3.rds")
+seu_sample_4 = readRDS("rds_objects/4_doublets_labeled_sample_4.rds")
+
+
+seu_sample_1 = AddMetaData(seu_sample_1, 1, col.name = "Lane")
+seu_sample_2 = AddMetaData(seu_sample_2, 2, col.name = "Lane")
+seu_sample_3 = AddMetaData(seu_sample_3, 3, col.name = "Lane")
+seu_sample_4 = AddMetaData(seu_sample_4, 4, col.name = "Lane")
+
+# Integration did not prove successful. UMAPs were completely separate. Going to analyze single cell and single nuclei separately.
+# sample_list = list(seu_sample_1, seu_sample_2, seu_sample_3, seu_sample_4)
+# features = SelectIntegrationFeatures(object.list = sample_list, nfeatures = 100)
+# sample_list = PrepSCTIntegration(object.list = sample_list, anchor.features = features)
+# 
+# anchors = FindIntegrationAnchors(object.list = sample_list, normalization.method = "SCT",
+#     anchor.features = features)
+# combined_sct = IntegrateData(anchorset = anchors, normalization.method = "SCT")
+# 
+# combined_sct = RunPCA(combined_sct, verbose = FALSE)
+# combined_sct = RunUMAP(combined_sct, reduction = "pca", dims = 1:30)
+# 
+# p1 <- DimPlot(immune.combined.sct, reduction = "umap", group.by = "stim")
+
+```
+
+# Visualize integration to ensure no remaining batch effects.
+```{r}
+DimPlot(harmonized_seu, reduction = "harmony", label = FALSE, pt.size = .1, group.by = "Lane", shuffle = TRUE)
+```
+

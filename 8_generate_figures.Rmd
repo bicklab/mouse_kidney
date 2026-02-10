@@ -1,0 +1,142 @@
+
+---
+title: "generate_figures"
+output: html_document
+date: "2023-09-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(ggrepel)
+
+save_plot = function(plot, file, legend = TRUE, width = 4, height = 4, png = FALSE) {
+  if (png) { ggsave(plot = plot, filename =  paste0(file, ".png"), dpi = 600, width = ifelse(legend, width, width - 1.5), height = height, units = 'in') }
+  ggsave(plot = plot, filename =  paste0(file, ".pdf"), dpi = 600, width = ifelse(legend, width, width - 1.5), height = height, units = 'in')
+}
+
+```
+
+# UMAP for automatic names.
+```{r}
+annotated_seu = readRDS("rds_objects/6_annotated_seu_sc.rds")
+(umap = DimPlot(annotated_seu, group.by = "predicted.id") + ggtitle(""))
+save_plot(umap, "figures/original_umap", width = 20, height = 12)
+```
+
+
+# UMAP.
+```{r}
+renamed_seu = readRDS("rds_objects/7_renamed_seu_sc.rds")
+(umap = DimPlot(renamed_seu, group.by = "predicted.id") + ggtitle(""))
+save_plot(umap, "figures/umap", width = 6.5)
+```
+
+```{r}
+(dotplot = DotPlot(renamed_seu, group.by = "predicted.id", split.by = "Condition", features = c("Il1b", "Cxcl1", "Cxcl2", "Cxcl3", "Tnf", "Il6")))
+save_plot(dotplot, "figures/dotplot", width = 8)
+```
+
+
+# Plot volcanos.
+```{r}
+format_volcano = list(
+  xlab("log2(fold change)"),
+  ylab("-log10(p-value)"),
+  #labs(color = "Pathway"),
+  #guides(color = guide_legend("Diapedesis")),
+  theme_bw(),
+  theme_classic(),
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        text = element_text(size = 12.5),
+        title = element_text(size = 11),
+        legend.key.size = unit(0, "lines"))#,
+  #scale_color_manual(values = c("grey", sunset_colors[9]))
+)
+
+
+# function for adding labels
+gene_labels = function(data, direction, xlim, ylim, few = FALSE) {
+  sorted_data = data %>% 
+    arrange(desc(`-log10_p_val`)) %>%
+    filter(`-log10_p_val` > -log10(0.05)) %>%
+    filter(abs(log2FoldChange) > 0.25) %>%
+    head(10)
+  if (few) {
+    sorted_data = head(sorted_data, 3)
+  }
+  if (direction == "pos") {
+    xlims = c(xlim - 0.5, xlim + 0.5)
+  } else {
+    xlims = c(-xlim - 0.5, -xlim + 0.5)
+  }
+  labels = geom_label_repel(data = sorted_data, mapping = aes(label = gene), size = 3, fill = NA, direction = "y", max.overlaps =  Inf, nudge_x = 0.05, segment.alpha = 0.25, force_pull = 0, xlim = xlims, ylim = c(ylim / 5, ylim), show.legend = FALSE, box.padding = 0, segment.linetype = "solid", label.size = 0.08, segment.curvature = ifelse(direction == "neg", -1e-40, 1e-40))
+  return(list(labels))
+}
+
+# function for making plot
+make_volcano_plots = function(cell_type, label1, label2, x_limit = 1.5, few = FALSE, rds = FALSE, highlight_list = c()) {
+
+  folder = "tables/metacells_de/"
+  input_filename = paste0(cell_type, "_", label1, "_vs_", label2, ".tsv")
+  
+  data = read_tsv(paste0(folder, input_filename)) %>%
+    mutate(`-log10_p_val` = -log10(padj))
+  
+  # sometimes the most significant p-value is 0, which results in an infinite value after log transformation
+  # if that is the case, these lines convert the value to the highest possible value
+  if (any(data$`-log10_p_val` == Inf)) {
+    data$`-log10_p_val`[data$`-log10_p_val` == Inf] = 292
+  } 
+  
+  y_limit = max(data$`-log10_p_val`) * 1.1
+  
+  data_pos = data %>% filter(log2FoldChange > 0)
+  data_neg = data %>% filter(log2FoldChange < 0)
+  buffer = 5
+  
+  if (length(highlight_list > 0)) {
+    data_pos = data_pos %>% filter(gene %in% highlight_list)
+    data_neg = data_neg %>% filter(gene %in% highlight_list)
+  }
+  
+  title = gsub("_", " ", gsub(".tsv", "", gsub("tissue_resident_", "", input_filename)))
+  
+  # render plot
+  plot = ggplot(data %>% arrange(gene %in% highlight_list), aes(x = log2FoldChange, y = `-log10_p_val`)) + #, color = gene %in% highlight_list)) +
+      geom_point() +
+      format_volcano +
+      xlim(-x_limit, x_limit) +
+      ylim(0, y_limit) +
+      geom_vline(xintercept = c(-0.25, 0.25), linetype = "longdash", alpha = 0.5) +
+      geom_hline(yintercept = -log10(0.05), linetype = "longdash", alpha = 0.5) +
+      gene_labels(data = data_pos, direction = "pos", xlim = x_limit, ylim = y_limit, few) +
+      gene_labels(data = data_neg, direction = "neg", xlim = x_limit, ylim = y_limit, few) +
+      ggtitle(title)
+  
+  print(plot)
+  
+  filename = paste0("figures/volcanos/", gsub(".tsv", "", input_filename))
+  save_plot(plot, filename, height = 4, width = 6, png = TRUE)
+  
+  if (rds) {
+    saveRDS(plot, paste0(filename, ".rds"))
+  }
+}
+
+```
+
+
+```{r}
+cell_types = c("dendritic cell", "endothelial cell", "epithelial cell of proximal tubule", "glomerular endothelial cell", "kidney collecting duct epithelial cell", "kidney collecting duct principal cell", "kidney distal convoluted tubule epithelial cell", "macrophage", "native cell")
+
+lapply(cell_types, make_volcano_plots, "KO", "WT")
+
+```
+```{r}
+make_volcano_plots("neutrophil", "KO", "WT")
+```
+

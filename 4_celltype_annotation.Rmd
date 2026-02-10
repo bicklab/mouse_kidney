@@ -1,0 +1,108 @@
+---
+title: "celltype_annotation"
+output: html_document
+date: "2023-08-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+library(tidyverse)
+library(Seurat)
+library(org.Mm.eg.db)
+library(Seurat.utils)
+library(SingleCellExperiment)
+```
+
+
+# Load data.
+```{r}
+harmonized_seu_sn = readRDS("rds_objects/5_harmonized_seu_sn.rds")
+harmonized_seu_sc = readRDS("rds_objects/5_harmonized_seu_sc.rds")
+
+```
+
+```{r}
+system('curl -o input_data/mka.rds "https://corpora-data-prod.s3.amazonaws.com/676c47a4-bd2c-4f09-82cb-2dfcd54be04a/local.rds?AWSAccessKeyId=ASIATLYQ5N5XVPXUTUX6&Signature=cmX09o8jYy4Pu6TYIKoEmxEBeSg%3D&x-amz-security-token=IQoJb3JpZ2luX2VjEC0aCXVzLXdlc3QtMiJGMEQCIDBJk9ewziny62QngjUrbPm8mjfuI7DQ1CoK%2BqTdqicoAiATQF48yL12KgoA%2F6SychIxiSPK6CyBXW4TCn2enGSAeSrrAwgVEAEaDDIzMTQyNjg0NjU3NSIM2nv1O5h4Io6w9S54KsgDSgyPDKBbYspw8gTa%2B4iZODmfDKFh9MC6G8mhgvaJFrffz1Lxb6Nm4zdT3V7mxTNhrm4kjodKfgUHGd8KRwt2nhuK%2FaJdU05vTphhBmxEqNsyLIABurKxBkA40jpXRjtuH1erkPJqa5Yo8CCZT1dDp72%2Bpk32v%2Fe8ocfL9Ffzol4Jv4VNs4iGMt8%2FAiLYmo5D1jlPicVjLzZt2xW22uhLhhObIdcKWIMRQIw7qPHWS6TWRIk3pQuCg3eMr0ybEXNRUfO%2FuNALgjd8Eo3zde8jFpbc6T52YA4xljJtfZO1j5IhTbZpIPSouowThNgfqKHaTGidkI6%2BZ1acKXvqze%2BOY14r4HNj45ppX%2F04GkTJn0b%2FjH82KEGTm3D4BJTEpdlqcg%2FJq6a6Ngk1ADQyxZS5XhzlB0XOWMsDXsivaoaYHuB2KkbonztUkfNhGmv4xNUgVs1TqnVo8BRHxbHBHDDvpd%2FlEe2fCaI%2F7Ue6qBesAQbYPhgYf5pcndTprbFsgD0q3Ry%2BRSumbMUtiCJ8CY4YncUFfMiFL7DAib5l7F6LL%2Buu5s0Bo%2FGcxe%2FrwINoTG9uxYoLx7mmA2upYrX3HML%2BGRL6HhDjBNQNMP6ugagGOqYBlEnWWmB8cHraQFux1DUbEuR%2F5U0mosRbr6d7%2BvGUrJfBeiBE19%2BMJLaM1rUM5C3wkGGr2x8t6Sx5VjjRA%2FFdONgRIEOatLMHkYOIQ7IpakXU0LpkrSU0lLxDs%2BqWxOmvH%2Bl8kWo8YdfqJr0Bds95Q8ilPwYPrfqAr31b%2F7dpxO6gbyKMQd1mVPVmKbeX0HCXYgB4Q2hrnrCOGgc8gDf5xgTjtPiQzQ%3D%3D&Expires=1695145349"')
+```
+
+```{r}
+mka = read_rds("input_data/mka.rds")
+
+harmonized_seu_sc_gene_names = mapIds(
+  org.Mm.eg.db,
+  keys = rownames(harmonized_seu_sc),
+  column = 'ENSEMBL',
+  keytype = 'SYMBOL')
+
+harmonized_sc = as.SingleCellExperiment(harmonized_seu_sc)
+rownames(harmonized_sc) = harmonized_seu_sc_gene_names
+harmonized_sc = harmonized_sc[!is.na(rownames(harmonized_sc)),]
+rownames(harmonized_sc) = make.unique(rownames(harmonized_sc)) # there are 8 genes with 2 entries, 1 with 4 so this renames uniquely
+renamed_seu_sc = as.Seurat(harmonized_sc)
+
+mka = FindVariableFeatures(mka)
+mka = ScaleData(mka)
+mka = RunPCA(mka)
+
+mouse_anchors_sc = FindTransferAnchors(reference = mka, query = renamed_seu_sc, dims = 1:30, reference.reduction = "pca", features = intersect(Features(mka), Features(renamed_seu_sc)))
+
+saveRDS(mouse_anchors_sc, "rds_objects/mouse_anchors_sc.rds")
+
+predictions_sc = TransferData(anchorset = mouse_anchors_sc, refdata = mka$cell_type, dims = 1:30)
+annotated_seu_sc = AddMetaData(renamed_seu_sc, metadata = predictions_sc)
+
+saveRDS(annotated_seu_sc, "rds_objects/6_annotated_seu_sc.rds")
+
+```
+```{r}
+mka = read_rds("input_data/mka.rds")
+
+harmonized_seu_sn_gene_names = mapIds(
+  org.Mm.eg.db,
+  keys = rownames(harmonized_seu_sn),
+  column = 'ENSEMBL',
+  keytype = 'SYMBOL')
+
+harmonized_sn = as.SingleCellExperiment(harmonized_seu_sn, assay = "RNA")
+rownames(harmonized_sn) = harmonized_seu_sn_gene_names
+harmonized_sn = harmonized_sn[!is.na(rownames(harmonized_sn)),]
+rownames(harmonized_sn) = make.unique(rownames(harmonized_sn)) # there are 8 genes with 2 entries, 1 with 4 so this renames uniquely
+renamed_seu_sn = as.Seurat(harmonized_sn)
+
+mka = FindVariableFeatures(mka)
+mka = ScaleData(mka)
+mka = RunPCA(mka)
+
+mouse_anchors_sn = FindTransferAnchors(reference = mka, query = renamed_seu_sn, dims = 1:30, reference.reduction = "pca", features = intersect(Features(mka), Features(renamed_seu_sn)))
+
+saveRDS(mouse_anchors_sn, "rds_objects/mouse_anchors_sn.rds")
+
+predictions_sn = TransferData(anchorset = mouse_anchors_sn, refdata = mka$cell_type, dims = 1:30, k.weight = 24) # k.weight must be less than or equal to number of anchor cells, which in this case is 24
+annotated_seu_sn = AddMetaData(renamed_seu_sn, metadata = predictions_sn)
+
+saveRDS(annotated_seu_sn, "rds_objects/6_annotated_seu_sn.rds")
+
+```
+
+
+```{r}
+annotated_seu_sc = readRDS("rds_objects/6_annotated_seu_sc.rds")
+
+annotated_seu_sc = subset(annotated_seu_sc, subset = (seurat_clusters %in% c(0, 1, 2, 3, 4, 8, 12) & predicted.id %in% c("macrophage", "native cell")) |
+                                               (seurat_clusters == 5 & predicted.id == "T cell") | 
+                                               (seurat_clusters == 6 & predicted.id == "neutrophil") |
+                                               (seurat_clusters == 7 & predicted.id == "dendritic cell") |
+                                               (seurat_clusters == 10 & predicted.id == "epithelial cell of proximal tubule") |
+                                               (seurat_clusters == 13 & predicted.id %in% c("endothelial cell", "glomerular endothelial cell")))
+
+annotated_seu_sc@meta.data$predicted.id[annotated_seu_sc@meta.data$predicted.id == "native cell"] = "macrophage"
+annotated_seu_sc@meta.data$predicted.id[annotated_seu_sc@meta.data$predicted.id == "glomerular endothelial cell"] = "endothelial cell"
+
+saveRDS(annotated_seu_sc, "rds_objects/6_annotated_seu_clean_sc.rds")
+
+```
+
+```{r}
+DimPlot(annotated_seu_sn, group.by = "predicted.id")
+```
+

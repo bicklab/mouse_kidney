@@ -1,0 +1,37 @@
+---
+title: "prep_for_metacells2"
+output: html_document
+date: "2023-09-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+library(DropletUtils)
+library(Matrix)
+library(Seurat)
+library(tidyverse)
+```
+
+# Convert files (followed explanation here: https://www.biomage.net/blog/how-to-demultiplex-a-seurat-object-and-convert-it-to-10x-files).
+```{r}
+# Load data.
+renamed_seu = readRDS("rds_objects/7_renamed_seu.rds")
+
+# Split data.
+renamed_seu@meta.data$Condition_Cell_Type = paste(renamed_seu$Condition, renamed_seu$predicted.id)
+renamed_seu.list = Seurat::SplitObject(renamed_seu, split.by = "Condition_Cell_Type")
+sample_names = unique(renamed_seu$Condition_Cell_Type)
+
+# Convert to 10X form.
+demultiplex_convert_to_10x = function(obj, samples) { 
+  for (i in 1:length(samples)) {
+    print(paste0("Converting sample ", samples[i]))
+    obj_sub = obj[[samples[i]]]
+    DropletUtils::write10xCounts(path = paste0(getwd(), "/metacells_files/", samples[i]), x = obj_sub[["RNA"]]@data, type = "sparse", version = "3")
+  }
+}
+
+# Execute.
+demultiplex_convert_to_10x(obj = renamed_seu.list, samples = sample_names)
+
+```

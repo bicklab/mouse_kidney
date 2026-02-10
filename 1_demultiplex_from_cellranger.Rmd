@@ -1,0 +1,78 @@
+---
+title: "demultiplex_from_cellranger"
+output: html_document
+date: "2023-08-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Alyssa/Mouse_Kidney/")
+
+library(SoupX)
+library(Seurat)
+library(tidyverse)
+
+```
+
+# Make seurat object. This one is just going to be used for clustering information for soupx.
+```{r}
+make_seurat = function(path_to_data, output_name) {
+  counts = Read10X_h5(path_to_data)
+  seu = CreateSeuratObject(counts)
+  
+  seu = SCTransform(seu)
+  seu = RunPCA(seu)
+  seu = RunUMAP(seu, dims = 1:10)
+  seu = FindNeighbors(seu)
+  seu = FindClusters(seu)
+  
+  saveRDS(seu, output_name)
+  return(seu)
+}
+
+seu_sample_1 = make_seurat(path_to_data = "input_data/10393-SW/count_10393-SW-1/filtered_feature_bc_matrix.h5", output_name = "rds_objects/1_raw_seu_clustered_sample_1.rds")
+seu_sample_2 = make_seurat(path_to_data = "input_data/10393-SW/count_10393-SW-2/filtered_feature_bc_matrix.h5", output_name = "rds_objects/1_raw_seu_clustered_sample_2.rds")
+
+
+seu_sample_3 = make_seurat(path_to_data = "input_data/10393-SW/count_10393-SW-3/filtered_feature_bc_matrix.h5", output_name = "rds_objects/1_raw_seu_clustered_sample_3.rds")
+seu_sample_4 = make_seurat(path_to_data = "input_data/10393-SW/count_10393-SW-4/filtered_feature_bc_matrix.h5", output_name = "rds_objects/1_raw_seu_clustered_sample_4.rds")
+
+```
+
+
+
+# Run soupx. 
+```{r}
+run_soupx = function(raw_path, filtered_path, raw_seu_path, output_path) {
+  
+  raw_matrix = Read10X_h5(raw_path)
+  filtered_matrix = Read10X_h5(filtered_path)
+  soup_channel_obj = SoupChannel(raw_matrix, filtered_matrix)
+  
+  seu = readRDS(raw_seu_path)
+  clusters = seu@meta.data$seurat_clusters
+  names(clusters) = rownames(seu@meta.data)
+  
+  sc = setClusters(soup_channel_obj, clusters)
+  sc = autoEstCont(sc)
+  sc = adjustCounts(sc)
+  
+  no_soup_seu = CreateSeuratObject(sc)
+  
+  # Filter out cells with > 15% mitochondrial gene expression, < 800 transcript reads, or < 200 genes. 
+  no_soup_seu = PercentageFeatureSet(object = no_soup_seu, pattern = "^MT-", col.name = "percent.mt", assay = "RNA")
+  no_soup_seu = subset(no_soup_seu, subset = nFeature_RNA >= 200 & nCount_RNA >= 800 & percent.mt <= 15)
+  
+  saveRDS(no_soup_seu, output_path)
+  return(no_soup_seu)
+}
+
+no_soup_sample_1 = run_soupx(raw_path = "input_data/10393-SW/count_10393-SW-1/raw_feature_bc_matrix.h5", filtered_path = "input_data/10393-SW/count_10393-SW-1/filtered_feature_bc_matrix.h5", raw_seu_path = "rds_objects/1_raw_seu_clustered_sample_1.rds", output_path = "rds_objects/2_no_soup_sample_1.rds")
+no_soup_sample_2 = run_soupx(raw_path = "input_data/10393-SW/count_10393-SW-2/raw_feature_bc_matrix.h5", filtered_path = "input_data/10393-SW/count_10393-SW-2/filtered_feature_bc_matrix.h5", raw_seu_path = "rds_objects/1_raw_seu_clustered_sample_2.rds", output_path = "rds_objects/2_no_soup_sample_2.rds")
+
+no_soup_sample_3 = run_soupx(raw_path = "input_data/10393-SW/count_10393-SW-3/raw_feature_bc_matrix.h5", filtered_path = "input_data/10393-SW/count_10393-SW-3/filtered_feature_bc_matrix.h5", raw_seu_path = "rds_objects/1_raw_seu_clustered_sample_3.rds", output_path = "rds_objects/2_no_soup_sample_3.rds")
+no_soup_sample_4 = run_soupx(raw_path = "input_data/10393-SW/count_10393-SW-4/raw_feature_bc_matrix.h5", filtered_path = "input_data/10393-SW/count_10393-SW-4/filtered_feature_bc_matrix.h5", raw_seu_path = "rds_objects/1_raw_seu_clustered_sample_4.rds", output_path = "rds_objects/2_no_soup_sample_4.rds")
+
+```
+
+
+
